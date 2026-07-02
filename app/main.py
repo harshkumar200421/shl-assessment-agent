@@ -8,5 +8,13 @@ app = FastAPI(
     version="1.0.0"
 )
 
+@app.get("/")
+def root():
+    return {
+        "message": "SHL Assessment Recommendation API is running",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
 app.include_router(chat_router)
 app.include_router(health_router)

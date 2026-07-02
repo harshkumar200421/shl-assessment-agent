@@ -1,157 +1,73 @@
-import json
-import re
-
-from app.core.prompts import SYSTEM_PROMPT
-from app.services.llm import generate
+import os
+import pickle
+import faiss
+from sentence_transformers import SentenceTransformer
 
 
 class Recommender:
 
     def __init__(self):
-        pass
 
-    def _needs_clarification(self, query: str) -> bool:
-        """
-        Ask for more details when the query is too vague.
-        """
-        query = query.lower()
+        print("Retriever initializing...")
 
-        vague_queries = [
-            "assessment",
-            "test",
-            "recommend",
-            "hire",
-            "hiring",
-            "job",
-            "candidate"
-        ]
+        self.model = None
 
-        # Very short queries should trigger clarification
-        if len(query.split()) <= 3:
-            return True
+        base = os.path.join("app", "data")
 
-        # Doesn't mention any role or technology
-        keywords = [
-            "python",
-            "java",
-            "developer",
-            "engineer",
-            "manager",
-            "sales",
-            "analyst",
-            "sql",
-            "aws",
-            "react",
-            "backend",
-            "frontend",
-            "data"
-        ]
+        index_path = os.path.join(base, "catalog.faiss")
+        pkl_path = os.path.join(base, "catalog.pkl")
 
-        if not any(k in query for k in keywords):
-            return True
+        print(f"Loading FAISS index from {index_path}")
 
-        return False
+        self.index = faiss.read_index(index_path)
 
-    def recommend(
-        self,
-        query: str,
-        retrieved: list,
-        conversation_history=None
-    ):
+        print("FAISS loaded")
 
-        if conversation_history is None:
-            conversation_history = []
+        print(f"Loading catalog from {pkl_path}")
 
-        # ---------------------------------------
-        # Ask clarification instead of guessing
-        # ---------------------------------------
-        if self._needs_clarification(query):
+        with open(pkl_path, "rb") as f:
+            self.catalog = pickle.load(f)
 
-            return {
-                "reply": (
-                    "I'd be happy to help. "
-                    "Could you please tell me:\n\n"
-                    "• Which role are you hiring for?\n"
-                    "• Experience level?\n"
-                    "• Any important technical or behavioural skills?"
-                ),
-                "needs_clarification": True,
-                "clarification_question": (
-                    "Which role, experience level and skills should be assessed?"
-                ),
-                "recommendations": [],
-                "end_of_conversation": False
-            }
+        print(f"Catalog loaded: {len(self.catalog)} records")
 
-        # ---------------------------------------
-        # Build conversation
-        # ---------------------------------------
+    def load_model(self):
 
-        history = ""
+        if self.model is None:
+            print("Loading embedding model...")
+            self.model = SentenceTransformer(
+                "sentence-transformers/all-MiniLM-L6-v2"
+            )
+            print("Embedding model loaded.")
 
-        for item in conversation_history:
-            role = item.get("role", "")
-            content = item.get("content", "")
-            history += f"{role}: {content}\n"
+    def search(self, query: str, top_k: int = 10):
 
-        # ---------------------------------------
-        # Retrieved catalog
-        # ---------------------------------------
+        self.load_model()
 
-        catalog = json.dumps(retrieved, indent=2)
+        embedding = self.model.encode(
+            [query],
+            normalize_embeddings=True
+        )
 
-        # ---------------------------------------
-        # Final prompt
-        # ---------------------------------------
+        distances, indices = self.index.search(embedding, top_k)
 
-        prompt = f"""
-{SYSTEM_PROMPT}
+        results = []
 
-Conversation History:
+        for idx, score in zip(indices[0], distances[0]):
+            if idx == -1:
+                continue
 
-{history}
+            item = self.catalog[idx]
 
-Current User Query:
+            results.append({
+                "name": item.get("name"),
+                "description": item.get("description"),
+                "duration": item.get("duration"),
+                "job_levels": item.get("job_levels"),
+                "remote": item.get("remote"),
+                "adaptive": item.get("adaptive"),
+                "category": item.get("keys"),
+                "link": item.get("link"),
+                "score": float(score)
+            })
 
-{query}
-
-Retrieved Assessments:
-
-{catalog}
-"""
-
-        # ---------------------------------------
-        # Gemini Response
-        # ---------------------------------------
-
-        response = generate(prompt)
-
-        # ---------------------------------------
-        # Parse JSON
-        # ---------------------------------------
-
-        try:
-            return json.loads(response)
-
-        except Exception:
-
-            # Gemini sometimes returns JSON inside markdown
-
-            match = re.search(r"\{.*\}", response, re.DOTALL)
-
-            if match:
-
-                try:
-                    return json.loads(match.group())
-                except Exception:
-                    pass
-
-            # Final fallback
-
-            return {
-                "reply": response,
-                "needs_clarification": False,
-                "clarification_question": "",
-                "recommendations": [],
-                "end_of_conversation": False
-            }
+        return results
