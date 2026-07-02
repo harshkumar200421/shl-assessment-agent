@@ -5,26 +5,36 @@ from app.services.recommender import Recommender
 
 router = APIRouter(tags=["Chat"])
 
-retriever = Retriever()
-recommender = Recommender()
+retriever = None
+recommender = None
 
 
-def build_search_query(query: str, history: list) -> str:
-    """
-    Build a richer search query using the conversation history.
-    This helps follow-up questions such as:
-    'Also include personality'
-    """
+def get_retriever():
+    global retriever
+
+    if retriever is None:
+        retriever = Retriever()
+
+    return retriever
+
+
+def get_recommender():
+    global recommender
+
+    if recommender is None:
+        recommender = Recommender()
+
+    return recommender
+
+
+def build_search_query(query: str, history: list):
 
     context = ""
 
     if history:
         for message in history[-6:]:
-            role = message.get("role", "")
-            content = message.get("content", "")
-
-            if role == "user":
-                context += content + " "
+            if message.get("role") == "user":
+                context += message.get("content", "") + " "
 
     context += query
 
@@ -34,27 +44,18 @@ def build_search_query(query: str, history: list) -> str:
 @router.post("/chat")
 def chat(request: ChatRequest):
 
-    # ---------------------------------------------
-    # Build search query
-    # ---------------------------------------------
+    retriever = get_retriever()
+    recommender = get_recommender()
 
     search_query = build_search_query(
         request.query,
         request.conversation_history
     )
 
-    # ---------------------------------------------
-    # Semantic Search
-    # ---------------------------------------------
-
     retrieved = retriever.search(
         search_query,
         top_k=10
     )
-
-    # ---------------------------------------------
-    # Recommendation Engine
-    # ---------------------------------------------
 
     response = recommender.recommend(
         query=request.query,
@@ -62,62 +63,40 @@ def chat(request: ChatRequest):
         conversation_history=request.conversation_history
     )
 
-    # ---------------------------------------------
-    # If Gemini returned recommendation names only,
-    # enrich them with catalog details.
-    # ---------------------------------------------
-
     enriched = []
 
     if isinstance(response, dict):
 
         recommendations = response.get("recommendations", [])
 
-        if recommendations:
+        catalog_lookup = {
+            item["name"]: item
+            for item in retrieved
+        }
 
-            catalog_lookup = {
-                item["name"]: item
-                for item in retrieved
-            }
+        for rec in recommendations:
 
-            for rec in recommendations:
+            if isinstance(rec, dict):
 
-                if isinstance(rec, dict):
+                assessment = catalog_lookup.get(rec.get("name"))
 
-                    name = rec.get("name")
+                if assessment:
 
-                    if name in catalog_lookup:
-
-                        assessment = catalog_lookup[name]
-
-                        enriched.append({
-
-                            "name": assessment.get("name"),
-
-                            "reason": rec.get("reason", ""),
-
-                            "description": assessment.get("description"),
-
-                            "duration": assessment.get("duration"),
-
-                            "job_levels": assessment.get("job_levels"),
-
-                            "category": assessment.get("category"),
-
-                            "remote": assessment.get("remote"),
-
-                            "adaptive": assessment.get("adaptive"),
-
-                            "link": assessment.get("link")
-                        })
+                    enriched.append({
+                        "name": assessment.get("name"),
+                        "reason": rec.get("reason", ""),
+                        "description": assessment.get("description"),
+                        "duration": assessment.get("duration"),
+                        "job_levels": assessment.get("job_levels"),
+                        "category": assessment.get("category"),
+                        "remote": assessment.get("remote"),
+                        "adaptive": assessment.get("adaptive"),
+                        "link": assessment.get("link")
+                    })
 
         response["recommendations"] = enriched
 
         return response
-
-    # ---------------------------------------------
-    # Fallback
-    # ---------------------------------------------
 
     return {
         "reply": str(response),

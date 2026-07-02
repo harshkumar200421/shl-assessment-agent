@@ -1,29 +1,44 @@
-import faiss
 import pickle
+import faiss
 from sentence_transformers import SentenceTransformer
 
-class Retriever:
-    def __init__(self):
-        # Load embedding model
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
 
-        # Load FAISS index
+class Retriever:
+
+    def __init__(self):
+
+        self.model = None
+
         self.index = faiss.read_index("app/data/catalog.faiss")
 
-        # Load catalog metadata
         with open("app/data/catalog.pkl", "rb") as f:
             self.catalog = pickle.load(f)
 
-    def search(self, query: str, top_k: int = 10):
-        # Create embedding for the user's query
-        query_embedding = self.model.encode([query])
+    def load_model(self):
 
-        # Search FAISS
-        distances, indices = self.index.search(query_embedding, top_k)
+        if self.model is None:
+            self.model = SentenceTransformer(
+                "sentence-transformers/all-MiniLM-L6-v2"
+            )
+
+    def search(self, query: str, top_k: int = 10):
+
+        self.load_model()
+
+        embedding = self.model.encode(
+            [query],
+            normalize_embeddings=True
+        )
+
+        distances, indices = self.index.search(
+            embedding,
+            top_k
+        )
 
         results = []
 
         for idx, score in zip(indices[0], distances[0]):
+
             if idx == -1:
                 continue
 
